@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { examCriteria, questionDistribution, getSubjectById } from '@/lib/exam-criteria';
-import { generateMultipleQuestionsPrompt, systemPrompt } from '@/lib/prompt-templates';
+import { generateMultipleQuestionsPrompt, systemPrompt, generateBatchTransformPrompt } from '@/lib/prompt-templates';
 import { Question, GenerateQuestionsRequest } from '@/types/exam';
 import {
   allQuestionBank,
@@ -21,13 +21,13 @@ function getOpenAIClient() {
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateQuestionsRequest = await request.json();
-    const { mode, count, subjectId, topicName, useBank = true, usAI = true } = body as GenerateQuestionsRequest & { useBank?: boolean; usAI?: boolean };
+    const { mode, count, subjectId, topicName, useBank = true, usAI = true, transformBank = true } = body as GenerateQuestionsRequest & { useBank?: boolean; usAI?: boolean; transformBank?: boolean };
 
     let allQuestions: Question[] = [];
 
     if (mode === 'mock') {
-      // 모의고사 모드: 문제은행 우선 + AI 보충
-      allQuestions = await generateHybridMockExam(useBank, usAI);
+      // 모의고사 모드: 문제은행 기출 + AI 변형
+      allQuestions = await generateHybridMockExam(useBank, usAI, transformBank);
     } else if (mode === 'practice' && subjectId) {
       // 영역별 연습 모드: 문제은행 우선 + AI 보충
       const subject = getSubjectById(subjectId);
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
         ? subject.topics.find(t => t.name === topicName)
         : undefined;
 
-      allQuestions = await generateHybridPractice(subject, count, topic, useBank, usAI);
+      allQuestions = await generateHybridPractice(subject, count, topic, useBank, usAI, transformBank);
     } else {
       return NextResponse.json({ error: '잘못된 요청입니다.' }, { status: 400 });
     }
@@ -57,18 +57,27 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// 하이브리드 모의고사 (문제은행 + AI)
-async function generateHybridMockExam(useBank: boolean, useAI: boolean): Promise<Question[]> {
+// 하이브리드 모의고사 (문제은행 + AI 변형)
+async function generateHybridMockExam(useBank: boolean, useAI: boolean, transformBank: boolean = true): Promise<Question[]> {
   let questions: Question[] = [];
 
   // 1단계: 문제은행에서 가져오기
   if (useBank && allQuestionBank.length > 0) {
     const bankQuestions = getRandomQuestions(60);
-    questions.push(...bankQuestions);
-    console.log(`문제은행에서 ${bankQuestions.length}개 문제 로드`);
+
+    // AI 변형 적용
+    if (transformBank && useAI && bankQuestions.length > 0) {
+      console.log(`문제은행 ${bankQuestions.length}개 문제를 AI로 변형 중...`);
+      const transformedQuestions = await transformQuestionsWithAI(bankQuestions);
+      questions.push(...transformedQuestions);
+      console.log(`${transformedQuestions.length}개 문제 변형 완료`);
+    } else {
+      questions.push(...bankQuestions);
+      console.log(`문제은행에서 ${bankQuestions.length}개 문제 로드 (원본)`);
+    }
   }
 
-  // 2단계: 부족한 문제는 AI로 생성
+  // 2단계: 부족한 문제는 AI로 새로 생성
   const needed = 60 - questions.length;
   if (needed > 0 && useAI) {
     console.log(`AI로 ${needed}개 문제 추가 생성 필요`);
@@ -80,13 +89,81 @@ async function generateHybridMockExam(useBank: boolean, useAI: boolean): Promise
   return shuffleArray(questions).slice(0, 60);
 }
 
-// 하이브리드 영역별 연습 (문제은행 + AI)
+// 기출문제를 AI로 변형
+async function transformQuestionsWithAI(originalQuestions: Question[]): Promise<Question[]> {
+  const openai = getOpenAIClient();
+  const transformedQuestions: Question[] = [];
+
+  // 10개씩 배치로 처리 (API 부하 분산)
+  const batchSize = 10;
+  const batches: Question[][] = [];
+
+  for (let i = 0; i < originalQuestions.length; i += batchSize) {
+    batches.push(originalQuestions.slice(i, i + batchSize));
+  }
+
+  // 배치 병렬 처리
+  const batchPromises = batches.map(async (batch) => {
+    try {
+      const prompt = generateBatchTransformPrompt(batch.map(q => ({
+        question: q.question,
+        options: q.options,
+        answer: q.answer,
+        explanation: q.explanation,
+        category: q.category
+      })));
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `${systemPrompt}\n\n추가 지침: 기출문제를 변형할 때는 핵심 개념은 유지하되, 숫자나 상황을 변경하여 완전히 새로운 문제로 만들어주세요.`
+          },
+          { role: 'user', content: prompt }
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.8,
+        max_tokens: 8000,
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) return batch; // 실패 시 원본 반환
+
+      const parsed = JSON.parse(content);
+      if (parsed.questions && Array.isArray(parsed.questions)) {
+        return parsed.questions.map((q: Question, idx: number) => ({
+          ...q,
+          id: 0,
+          source: 'ai-transformed',
+          originalId: batch[idx]?.id,
+          year: batch[idx]?.year,
+          difficulty: batch[idx]?.difficulty || 'medium',
+          tags: [...(batch[idx]?.tags || []), '변형문제']
+        }));
+      }
+
+      return batch; // 파싱 실패 시 원본 반환
+    } catch (error) {
+      console.error('문제 변형 오류:', error);
+      return batch; // 오류 시 원본 반환
+    }
+  });
+
+  const results = await Promise.all(batchPromises);
+  results.forEach(batch => transformedQuestions.push(...batch));
+
+  return transformedQuestions;
+}
+
+// 하이브리드 영역별 연습 (문제은행 + AI 변형)
 async function generateHybridPractice(
   subject: typeof examCriteria.subjects[0],
   count: number,
   topic: typeof examCriteria.subjects[0]['topics'][0] | undefined,
   useBank: boolean,
-  useAI: boolean
+  useAI: boolean,
+  transformBank: boolean = true
 ): Promise<Question[]> {
   let questions: Question[] = [];
 
@@ -102,11 +179,20 @@ async function generateHybridPractice(
 
     const shuffled = shuffleArray(filtered);
     const bankQuestions = shuffled.slice(0, count);
-    questions.push(...bankQuestions);
-    console.log(`${subject.name} 문제은행에서 ${bankQuestions.length}개 문제 로드`);
+
+    // AI 변형 적용
+    if (transformBank && useAI && bankQuestions.length > 0) {
+      console.log(`${subject.name} 문제 ${bankQuestions.length}개 AI로 변형 중...`);
+      const transformedQuestions = await transformQuestionsWithAI(bankQuestions);
+      questions.push(...transformedQuestions);
+      console.log(`${subject.name} ${transformedQuestions.length}개 문제 변형 완료`);
+    } else {
+      questions.push(...bankQuestions);
+      console.log(`${subject.name} 문제은행에서 ${bankQuestions.length}개 문제 로드 (원본)`);
+    }
   }
 
-  // 2단계: 부족한 문제는 AI로 생성
+  // 2단계: 부족한 문제는 AI로 새로 생성
   const needed = count - questions.length;
   if (needed > 0 && useAI) {
     console.log(`${subject.name} AI로 ${needed}개 문제 추가 생성`);

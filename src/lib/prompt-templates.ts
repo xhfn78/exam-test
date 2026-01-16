@@ -102,3 +102,99 @@ export const systemPrompt = `당신은 대한민국 국가기술자격 전기기
 - JSON 형식으로만 응답
 - 한국어로 작성
 - 수식은 텍스트로 표현 (예: "V = IR", "P = √3 × V × I × cosθ")`;
+
+// 기출문제 변형 프롬프트
+export function generateTransformQuestionPrompt(originalQuestion: {
+  question: string;
+  options: string[];
+  answer: number;
+  explanation: string;
+  category: { subject: string; topic: string; subtopic: string };
+}): string {
+  return `당신은 대한민국 전기기능장 필기시험 출제 전문가입니다.
+다음 기출문제를 참고하여 **새로운 문제**를 만들어주세요.
+
+[원본 기출문제]
+과목: ${originalQuestion.category.subject}
+세부항목: ${originalQuestion.category.topic}
+문제: ${originalQuestion.question}
+선택지: ${originalQuestion.options.map((opt, i) => `${i + 1}. ${opt}`).join('\n')}
+정답: ${originalQuestion.answer + 1}번
+해설: ${originalQuestion.explanation}
+
+[변형 방법 - 다음 중 하나 이상 적용]
+1. 숫자/수치 변경: 주어진 값들을 다른 값으로 변경
+2. 상황 변경: 같은 원리를 다른 상황에 적용
+3. 질문 방식 변경: "구하시오" → "틀린 것은?" 또는 역으로
+4. 조건 추가/변경: 문제 조건을 약간 수정
+5. 난이도 조절: 조금 더 어렵거나 쉽게 변형
+
+[요구사항]
+1. 원본과 같은 개념/원리를 테스트하되 새로운 문제로 변형
+2. 정답과 해설도 변형된 문제에 맞게 새로 작성
+3. 4지선다 객관식 형태 유지
+4. 선택지는 그럴듯하지만 명확히 구분 가능하게
+
+응답은 반드시 아래 JSON 형식으로만 작성하세요:
+{
+  "question": "변형된 문제 내용",
+  "options": ["선택지1", "선택지2", "선택지3", "선택지4"],
+  "answer": 0,
+  "explanation": "변형된 문제에 대한 해설",
+  "category": {
+    "subject": "${originalQuestion.category.subject}",
+    "topic": "${originalQuestion.category.topic}",
+    "subtopic": "${originalQuestion.category.subtopic}"
+  }
+}`;
+}
+
+// 여러 기출문제 일괄 변형 프롬프트
+export function generateBatchTransformPrompt(questions: Array<{
+  question: string;
+  options: string[];
+  answer: number;
+  explanation: string;
+  category: { subject: string; topic: string; subtopic: string };
+}>): string {
+  const questionsText = questions.map((q, idx) => `
+[문제 ${idx + 1}]
+과목: ${q.category.subject} > ${q.category.topic}
+문제: ${q.question}
+선택지: ${q.options.join(' / ')}
+정답: ${q.answer + 1}번
+`).join('\n');
+
+  return `당신은 대한민국 전기기능장 필기시험 출제 전문가입니다.
+다음 ${questions.length}개의 기출문제를 각각 변형하여 **새로운 문제**로 만들어주세요.
+
+${questionsText}
+
+[변형 방법]
+- 숫자/수치 변경 (계산문제의 경우)
+- 상황이나 조건 변경
+- 질문 방식 변경
+- 같은 원리를 테스트하되 새로운 문제로
+
+[요구사항]
+1. 각 문제는 원본과 같은 개념을 테스트하되 새롭게 변형
+2. 정답과 해설도 변형된 문제에 맞게 작성
+3. 4지선다 객관식 형태 유지
+
+응답은 반드시 아래 JSON 형식으로만 작성하세요:
+{
+  "questions": [
+    {
+      "question": "변형된 문제",
+      "options": ["선택지1", "선택지2", "선택지3", "선택지4"],
+      "answer": 0,
+      "explanation": "해설",
+      "category": {
+        "subject": "과목명",
+        "topic": "세부항목",
+        "subtopic": "세세항목"
+      }
+    }
+  ]
+}`
+}

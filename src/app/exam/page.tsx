@@ -261,7 +261,7 @@ export default function CBTExamPage() {
       {/* 메인 컨텐츠 영역 */}
       <div className="flex-1 flex overflow-hidden">
         {/* 문제 영역 */}
-        <div className={`flex-1 p-4 overflow-hidden ${layoutMode === 'split' ? 'pr-2' : ''}`}>
+        <div className={`p-4 overflow-hidden ${layoutMode === 'split' ? 'w-3/4 flex-1 pr-2' : 'flex-1'}`}>
           <CBTQuestionPanel
             question={currentQuestion}
             questionNumber={currentQuestionIndex + 1}
@@ -276,7 +276,7 @@ export default function CBTExamPage() {
 
         {/* 답안 표기란 (split 모드일 때) */}
         {layoutMode === 'split' && (
-          <div className="w-64 p-4 pl-2 overflow-hidden">
+          <div className="w-1/4 min-w-[140px] max-w-[280px] p-4 pl-2 overflow-hidden">
             <CBTAnswerGrid
               questions={questions}
               userAnswers={userAnswers}
